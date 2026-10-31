@@ -1,0 +1,5 @@
+# Sentinel-AI runs with the Python standard library alone against the mock
+# target. These are OPTIONAL quality-of-life extras:
+
+pyyaml>=6.0      # to read .yaml configs (otherwise use the .json configs)
+pytest>=7.0      # nicer test runner (tests also run with plain python)

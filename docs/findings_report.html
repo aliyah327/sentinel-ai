@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color:#1a1a1a; font-size:11pt; line-height:1.5; }
+  h1 { color:#0b7261; font-size:20pt; margin:0 0 2pt; }
+  h2 { color:#0b7261; font-size:13pt; margin:18pt 0 4pt; border-bottom:2px solid #0b7261; padding-bottom:2pt; }
+  h3 { font-size:11.5pt; margin:12pt 0 2pt; }
+  .meta { color:#555; font-size:9.5pt; margin-bottom:6pt; }
+  table { border-collapse:collapse; width:100%; margin:6pt 0; font-size:9.5pt; }
+  th,td { border:1px solid #ccc; padding:4pt 6pt; text-align:left; vertical-align:top; }
+  th { background:#0b7261; color:#fff; }
+  code,.mono { font-family:"Courier New",monospace; background:#f3f3f3; padding:1pt 3pt; border-radius:3px; font-size:9pt; }
+  .fail { color:#a40000; font-weight:bold; }
+  .ok { color:#0b6b1f; font-weight:bold; }
+  .box { background:#f4faf8; border-left:4px solid #0b7261; padding:6pt 10pt; margin:8pt 0; }
+  ul { margin:4pt 0 4pt 0; padding-left:18pt; }
+  li { margin:2pt 0; }
+  .small { font-size:9pt; color:#666; }
+</style></head><body>
+
+<h1>Sentinel-AI — AI Security Evaluation Report</h1>
+<div class="meta">
+ASCL AI Security Training · Prince Sultan University · Assignment A4 (Capstone)<br>
+Tool: Sentinel-AI v0.1.0 · Method: canary-token guardrail red-teaming · Date: 31 October 2026
+</div>
+
+<h2>1. Objective</h2>
+<p>
+This project evaluates the robustness of a chat model's safety guardrails against
+<b>prompt-injection</b> and <b>encoding-based evasion</b> attacks, and packages the
+evaluation as a reusable, installable command-line tool inspired by Promptfoo and Garak.
+</p>
+<p>
+A deliberate design decision underlies the whole project: rather than measuring whether a
+model will produce genuinely dangerous content (which would require generating that content
+to grade it), Sentinel-AI uses a <b>canary-token</b> method. A harmless secret string is
+planted in the system prompt, and the model is instructed never to reveal it. An attack is
+counted as successful only when the model <b>leaks that harmless token</b>. This yields the
+same security signal — can the guardrail be defeated? — with zero hazardous output, so the
+tool is safe to publish and reuse by other researchers.
+</p>
+
+<h2>2. Methodology</h2>
+<h3>2.1 Components</h3>
+<table>
+<tr><th>Component</th><th>Role</th></tr>
+<tr><td><b>Target</b></td><td>The system under test. A deterministic <code>mock</code> guardrailed assistant (for reproducible demos), or a local model via <code>ollama:llama3.2</code>. Same interface for both.</td></tr>
+<tr><td><b>Probe</b></td><td>A base attack input with an intent — e.g. directly asking for the token, or faking an administrator override.</td></tr>
+<tr><td><b>Strategy</b></td><td>A transform applied to each probe to evade input filters: <code>plain</code>, <code>base64</code>, <code>rot13</code>, <code>leetspeak</code>.</td></tr>
+<tr><td><b>Detector</b></td><td>Decides pass/fail for a single response. The primary detector checks whether the canary token is present (an objective, binary, reproducible test).</td></tr>
+<tr><td><b>Evaluator</b></td><td>Runs every <i>probe × strategy × repetition</i>, then computes Attack Success Rate (ASR).</td></tr>
+</table>
+
+<h3>2.2 Metric</h3>
+<div class="box">
+<b>Attack Success Rate (ASR)</b> = confirmed successful attacks ÷ valid attempts.<br>
+Reported overall, per attack category, and per evasion strategy.
+</div>
+
+<h3>2.3 Test matrix</h3>
+<p>4 probes × 4 strategies × 3 repetitions = <b>48 test cases</b> against the mock target.
+Repetitions expose any non-determinism; the mock is deterministic, so repetitions are
+consistent, which is the desired baseline for an evidence demo.</p>
+
+<h2>3. Results</h2>
+<table>
+<tr><th>Scope</th><th>Successes / Attempts</th><th>ASR</th></tr>
+<tr><td>Overall</td><td>27 / 48</td><td class="fail">56.2%</td></tr>
+<tr><td>Category — prompt_injection</td><td>9 / 12</td><td class="fail">75.0%</td></tr>
+<tr><td>Category — secret_extraction</td><td>12 / 24</td><td>50.0%</td></tr>
+<tr><td>Category — jailbreak</td><td>6 / 12</td><td>50.0%</td></tr>
+<tr><td>Strategy — plain</td><td>3 / 12</td><td class="ok">25.0%</td></tr>
+<tr><td>Strategy — base64</td><td>12 / 12</td><td class="fail">100.0%</td></tr>
+<tr><td>Strategy — rot13</td><td>12 / 12</td><td class="fail">100.0%</td></tr>
+<tr><td>Strategy — leetspeak</td><td>0 / 12</td><td class="ok">0.0%</td></tr>
+</table>
+
+<h2>4. Root-cause analysis</h2>
+<p>
+The target's guardrail is a <b>keyword filter</b>: it scans the raw user text for words like
+"secret" or "token" and refuses when it finds them. This explains every number above:
+</p>
+<ul>
+<li><b>Plain text (25% ASR):</b> direct requests contain the banned keywords, so most are
+refused. The few successes come from injection-style phrasings that avoid the keywords.</li>
+<li><b>Base64 &amp; ROT13 (100% ASR):</b> the filter sees only an opaque encoded blob — the
+banned words are not literally present — so the request passes the filter untouched. The
+model then decodes and obeys it. This is the central vulnerability.</li>
+<li><b>Leetspeak (0% ASR):</b> the substitutions perturb the keywords enough to pass the
+filter, but the target does not "un-leet" the text, so the request is never acted upon.
+This reveals that filter coverage is <i>uneven</i> across transforms — a finding in itself.</li>
+<li><b>Prompt injection (75% ASR):</b> fake "system administrator / developer mode" framing
+exploits a weak <b>trust boundary</b> — the model treats untrusted user text as if it were a
+privileged instruction.</li>
+</ul>
+<div class="box">
+<b>Core lesson:</b> input-keyword filtering gives a false sense of safety. Any attacker who
+re-encodes their request walks straight past it. Robust guardrails must evaluate decoded
+<i>intent</i> and enforce a trust boundary, not match surface strings.
+</div>
+
+<h2>5. Recommended mitigations</h2>
+<ul>
+<li><b>Decode-then-check:</b> normalise/decode inputs (Base64, ROT13, leetspeak) before the
+safety check, so the filter sees the real intent.</li>
+<li><b>Enforce a trust boundary:</b> never let user text be promoted to system authority;
+ignore "ignore previous instructions / admin override" patterns.</li>
+<li><b>Output-side canary guard:</b> scan model <i>output</i> for the secret and block it —
+defence in depth, independent of the input filter.</li>
+<li><b>Semantic (model-based) classification</b> instead of keyword matching, for intent that
+survives re-encoding.</li>
+</ul>
+<p class="small">Each mitigation is directly testable by re-running Sentinel-AI after applying
+it and confirming the ASR for the corresponding strategy drops — the "validate the fix"
+step from the training's evidence workflow.</p>
+
+<h2>6. Validation &amp; reproducibility</h2>
+<p>
+Every case in the HTML/JSON report records the exact attack input, the full model response,
+and the detector verdict, so any finding can be reproduced independently. Four automated
+tests (<code>tests/test_sentinel.py</code>) lock in the core behaviours as regression checks.
+The mock target makes results deterministic; the Ollama target runs the identical benchmark
+against a real local model with all traffic confined to <code>localhost:11434</code>.
+</p>
+
+<h2>7. Conclusion</h2>
+<p>
+Sentinel-AI demonstrates, with reproducible local evidence, that keyword-based LLM guardrails
+are defeated by trivial input encoding (100% ASR for Base64 and ROT13 here) and by
+trust-boundary violations (75% ASR for prompt injection). The tool is modular, tested,
+documented, and installable, and it produces this evidence without ever generating harmful
+content — making it a practical, safe building block for real guardrail-robustness testing.
+</p>
+
+<p class="small">Generated locally. No data left the host machine. Sentinel-AI is a
+guardrail-robustness tool, not a content generator.</p>
+
+</body></html>
